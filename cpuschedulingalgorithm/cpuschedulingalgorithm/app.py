@@ -1,131 +1,129 @@
 from flask import Flask, render_template, request, jsonify
 from scheduler import (
-    Process, solve_fcfs, solve_round_robin, solve_sjf, solve_srtf,
+    Process, solve_fcfs, solve_round_robin, solve_sjf, solve_srtf, 
     solve_priority, solve_priority_preemptive, calculate_metrics
-)
+) 
 
-app = Flask(__name__)
+application_server = Flask(__name__)
 
-@app.route('/')
-def index():
+# --- The Homepage Route ---
+@application_server.route('/')
+def load_simulator_page():
     return render_template('index.html')
 
-
-@app.route('/calculate', methods=['POST'])
-def calculate():
-    data = request.json
-    algorithm = data.get('algorithm', 'fcfs')
-
+# --- The Central Calculation Route (Runs ONE algorithm) ---
+@application_server.route('/calculate', methods=['POST'])
+def run_single_algorithm():
+    input_request_data = request.json
+    
+    algorithm_name = input_request_data.get('algorithm', 'fcfs')
+    
     try:
-        quantum = int(data.get('quantum', 2))
+        time_quantum_value = int(input_request_data.get('quantum', 2)) 
     except ValueError:
         return jsonify(error="Invalid value for Time Quantum. Must be an integer."), 400
 
-    processes = []
-    for i, p_data in enumerate(data['processes']):
-        pid = f"P{i+1}"
+    process_objects_list = []
+    for process_index, process_raw_data in enumerate(input_request_data['processes']):
+        process_id = f"P{process_index+1}"
         try:
-            at = int(p_data[1])
-            bt = int(p_data[2])
-            pr = int(p_data[3]) if len(p_data) > 3 and p_data[3] else None
-            processes.append(Process(pid, at, bt, pr))
-        except (ValueError, IndexError) as e:
-            print(f"Error parsing process data: {e}")
+            arrival_time = int(process_raw_data[1])
+            burst_time = int(process_raw_data[2])
+            priority_level = int(process_raw_data[3]) if len(process_raw_data) > 3 and process_raw_data[3] else None
+            process_objects_list.append(Process(process_id, arrival_time, burst_time, priority_level))
+        except (ValueError, IndexError) as error_detail:
+            print(f"Error parsing process data: {error_detail}")
             return jsonify(error="Invalid process input (AT, BT, or Priority). Check that all values are numbers."), 400
-
-    scheduled_processes = []
-    gantt_timeline = []
-
+    
+    final_scheduled_jobs = []
+    gantt_chart_timeline = []
+    
     try:
-        if algorithm in ['fcfs', 'sjf', 'priority']:
-            if algorithm == 'fcfs':
-                scheduled_processes = solve_fcfs(processes)
-            elif algorithm == 'sjf':
-                scheduled_processes = solve_sjf(processes)
-            elif algorithm == 'priority':
-                scheduled_processes = solve_priority(processes)
+        if algorithm_name in ['fcfs', 'sjf', 'priority']:
+            if algorithm_name == 'fcfs':
+                final_scheduled_jobs = solve_fcfs(process_objects_list)
+            elif algorithm_name == 'sjf':
+                final_scheduled_jobs = solve_sjf(process_objects_list)
+            elif algorithm_name == 'priority':
+                final_scheduled_jobs = solve_priority(process_objects_list)
+            
+            gantt_chart_timeline = [{'pid': job.pid, 'start': job.ct - job.bt - job.wt, 'end': job.ct} for job in final_scheduled_jobs]
 
-            gantt_timeline = [
-                {'pid': p.pid, 'start': p.ct - p.bt - p.wt, 'end': p.ct}
-                for p in scheduled_processes
-            ]
+        elif algorithm_name == 'rr':
+            final_scheduled_jobs, gantt_chart_timeline = solve_round_robin(process_objects_list, time_quantum_value) 
+            
+        elif algorithm_name == 'srtf':
+            final_scheduled_jobs, gantt_chart_timeline = solve_srtf(process_objects_list)
 
-        elif algorithm == 'rr':
-            scheduled_processes, gantt_timeline = solve_round_robin(processes, quantum)
-
-        elif algorithm == 'srtf':
-            scheduled_processes, gantt_timeline = solve_srtf(processes)
-
-        elif algorithm == 'priority_preemptive':
-            scheduled_processes, gantt_timeline = solve_priority_preemptive(processes)
-
+        elif algorithm_name == 'priority_preemptive':
+            final_scheduled_jobs, gantt_chart_timeline = solve_priority_preemptive(process_objects_list)
+            
         else:
-            return jsonify(error=f"Algorithm '{algorithm}' not supported."), 400
-
-    except Exception as e:
-        print(f"Error during calculation for {algorithm}: {e}")
-        return jsonify(error=f"Calculation Failed: {e}"), 500
-
-    final_metrics = calculate_metrics(scheduled_processes, gantt_timeline)
-    results = [p.to_dict() for p in scheduled_processes]
-
+            return jsonify(error=f"Algorithm '{algorithm_name}' not supported."), 400
+            
+    except Exception as error_detail:
+        print(f"Error during calculation for {algorithm_name}: {error_detail}")
+        return jsonify(error=f"Calculation Failed: {error_detail}"), 500
+    
+    overall_performance_metrics = calculate_metrics(final_scheduled_jobs, gantt_chart_timeline)
+    
+    final_results_for_table = [job.to_dict() for job in final_scheduled_jobs]
+    
     return jsonify(
-        results=results,
-        gantt_timeline=gantt_timeline,
-        metrics=final_metrics
+        results=final_results_for_table, 
+        gantt_timeline=gantt_chart_timeline,
+        metrics=overall_performance_metrics
     )
 
-
-@app.route('/compare', methods=['POST'])
-def compare():
-    data = request.json
-    processes_data = data['processes']
-
+# --- The Comparison Route (Runs MULTIPLE algorithms) ---
+@application_server.route('/compare', methods=['POST'])
+def run_comparison_algorithms():
+    input_request_data = request.json
+    processes_raw_data = input_request_data['processes']
+    
     try:
-        quantum = int(data.get('quantum', 2))
+        time_quantum_value = int(input_request_data.get('quantum', 2))
     except ValueError:
         return jsonify(error="Invalid value for Time Quantum in comparison. Must be an integer."), 400
-
+    
     comparison_results = []
-
+    
     ALGORITHMS_TO_COMPARE = [
         ('FCFS', solve_fcfs, False),
         ('SJF', solve_sjf, False),
         ('Round Robin', solve_round_robin, True)
     ]
-
-    for name, solver, is_preemptive in ALGORITHMS_TO_COMPARE:
-        processes = []
-        for i, p_data in enumerate(processes_data):
-            pid = f"P{i+1}"
+    
+    for algorithm_name, solver_function, is_preemptive in ALGORITHMS_TO_COMPARE:
+        
+        process_objects_list = []
+        for process_index, process_raw_data in enumerate(processes_raw_data):
+            process_id = f"P{process_index+1}"
             try:
-                at = int(p_data[1])
-                bt = int(p_data[2])
-                pr = int(p_data[3]) if len(p_data) > 3 and p_data[3] else None
-                processes.append(Process(pid, at, bt, pr))
-            except (ValueError, IndexError) as e:
-                return jsonify(error=f"Invalid process input for {name} comparison: {e}"), 400
+                arrival_time = int(process_raw_data[1])
+                burst_time = int(process_raw_data[2])
+                priority_level = int(process_raw_data[3]) if len(process_raw_data) > 3 and process_raw_data[3] else None
+                process_objects_list.append(Process(process_id, arrival_time, burst_time, priority_level))
+            except (ValueError, IndexError) as error_detail:
+                return jsonify(error=f"Invalid process input for {algorithm_name} comparison: {error_detail}"), 400
 
         if is_preemptive:
-            scheduled_processes, gantt_timeline = solver(processes, quantum)
+            final_scheduled_jobs, gantt_chart_timeline = solver_function(process_objects_list, time_quantum_value)
         else:
-            scheduled_processes = solver(processes)
-            gantt_timeline = [
-                {'pid': p.pid, 'start': p.ct - p.bt - p.wt, 'end': p.ct}
-                for p in scheduled_processes
-            ]
+            final_scheduled_jobs = solver_function(process_objects_list)
+            gantt_chart_timeline = [{'pid': job.pid, 'start': job.ct - job.bt - job.wt, 'end': job.ct} for job in final_scheduled_jobs]
 
-        metrics = calculate_metrics(scheduled_processes, gantt_timeline)
-
+        performance_metrics = calculate_metrics(final_scheduled_jobs, gantt_chart_timeline)
+        
         comparison_results.append({
-            'algorithm': name,
-            'avg_wt': metrics.get('avg_wt', 0.0),
-            'avg_tat': metrics.get('avg_tat', 0.0),
-            'tei': metrics.get('tei', 0.0)
+            'algorithm': algorithm_name,
+            'avg_wt': performance_metrics.get('avg_wt', 0.0), 
+            'avg_tat': performance_metrics.get('avg_tat', 0.0),
+            'tei': performance_metrics.get('tei', 0.0)
         })
 
     return jsonify(results=comparison_results)
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    application_server.run(debug=True)
